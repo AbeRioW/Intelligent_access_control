@@ -18,12 +18,17 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "spi.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "oled.h"
 #include "matrix_keyboard.h"
+#include "RC522.h"
+#include "string.h"
+#include "AS608.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -87,10 +92,56 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_SPI1_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  OLED_Init();
+   OLED_Init();
+  OLED_ShowString(0,0,(uint8_t*)"Initializing...",8,1);
+  OLED_Refresh();
+  HAL_Delay(1000);
+   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET); // LAY1连接到PB13
+	 HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET); // LAY1连接到PB13
+  PCD_Init(); // 初始化RC522
+  AS608_Init(); // 初始化AS608
+  
+  // AS608握手
+  OLED_Clear();
+  OLED_ShowString(0,0,(uint8_t*)"Checking AS608...",8,1);
+  OLED_Refresh();
+  
+  uint32_t as608_addr = 0xffffffff;
+  uint8_t handshakeResult = AS608_HandShake(&as608_addr);
+  
+  if (handshakeResult == AS608_ACK_OK)
+  {
+    // 握手成功
+    OLED_Clear();
+    OLED_ShowString(0, 0, (uint8_t*)"AS608 Handshake", 8, 1);
+    OLED_ShowString(0, 8, (uint8_t*)"Success!", 8, 1);
+    OLED_Refresh();
+    HAL_Delay(2000);
+    
+    // 进入主页面
+    OLED_Clear();
+    OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+    OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+    OLED_Refresh();
+  }
+  else
+  {
+    // 握手失败
+    OLED_Clear();
+    OLED_ShowString(0, 0, (uint8_t*)"AS608 Handshake", 8, 1);
+    OLED_ShowString(0, 8, (uint8_t*)"Failed!", 8, 1);
+    OLED_Refresh();
+    HAL_Delay(2000);
+		while(1);
+  }
+	OLED_Clear();
   Matrix_Keyboard_Init();
-  OLED_ShowString(0,0,(uint8_t*)"Key: ",8,1);
+  PCD_Init();
+	  AS608_Init(); // 初始化AS608
+  OLED_ShowString(0,0,(uint8_t*)"NFC Card ID:",8,1);
   OLED_Refresh();
   /* USER CODE END 2 */
 
@@ -104,6 +155,7 @@ int main(void)
     static uint8_t last_key = 0;
     uint8_t current_key = Matrix_Keyboard_Scan();
     
+    // 键盘处理
     if (current_key != last_key && current_key != 0)
     {
       OLED_Clear();
@@ -116,6 +168,36 @@ int main(void)
     {
       last_key = 0;
     }
+    
+    // NFC卡片检测
+    static uint8_t last_card[4] = {0};
+    uint8_t card_type[2] = {0};
+    uint8_t card_id[4] = {0};
+    
+    if (PCD_Request(PICC_REQIDL, card_type) == PCD_OK)
+    {
+      if (PCD_Anticoll(card_id) == PCD_OK)
+      {
+        // 检查卡片ID是否变化
+        if (memcmp(card_id, last_card, 4) != 0)
+        {
+          OLED_Clear();
+          OLED_ShowString(0,0,(uint8_t*)"NFC Card ID:",8,1);
+          for (int i = 0; i < 4; i++)
+          {
+            OLED_ShowNum(10 + i*20, 2, card_id[i], 2, 8, 1);
+          }
+          OLED_Refresh();
+          memcpy(last_card, card_id, 4);
+        }
+      }
+    }
+    else
+    {
+      // 清除last_card
+      memset(last_card, 0, 4);
+    }
+    
     HAL_Delay(100); // 消抖
   }
   /* USER CODE END 3 */
