@@ -539,6 +539,12 @@ int main(void)
       if (current_key == 4)
       {
         // 4号按键，进入NFC卡片注册模式
+        // 密码验证
+        if (!VerifyPIN())
+        {
+          continue;
+        }
+        
         OLED_Clear();
         OLED_ShowString(0, 0, (uint8_t*)"Place NFC Card", 8, 1);
         OLED_ShowString(0, 8, (uint8_t*)"to Register", 8, 1);
@@ -610,10 +616,15 @@ int main(void)
         OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
         OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
         OLED_Refresh();
-      }
-      else if (current_key == 12)
+      } else if (current_key == 12)
       {
         // 12号按键，进入NFC卡片删除模式
+        // 密码验证
+        if (!VerifyPIN())
+        {
+          continue;
+        }
+        
         OLED_Clear();
         OLED_ShowString(0, 0, (uint8_t*)"Place NFC Card", 8, 1);
         OLED_ShowString(0, 8, (uint8_t*)"to Delete", 8, 1);
@@ -680,10 +691,15 @@ int main(void)
         OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
         OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
         OLED_Refresh();
-      }
-      else if (current_key == 13)
+      } else if (current_key == 13)
       {
         // 13号按键，进入指纹注册模式
+        // 密码验证
+        if (!VerifyPIN())
+        {
+          continue;
+        }
+        
         OLED_Clear();
         OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
         OLED_ShowString(0, 8, (uint8_t*)"Enrollment", 8, 1);
@@ -1025,10 +1041,15 @@ int main(void)
         OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
         OLED_ShowString(0, 56, (uint8_t*)"Press #8 to Change PIN", 8, 1);
         OLED_Refresh();
-      }
-      else if (current_key == 15)
+      } else if (current_key == 15)
       {
         // 15号按键，进入指纹删除模式
+        // 密码验证
+        if (!VerifyPIN())
+        {
+          continue;
+        }
+        
         OLED_Clear();
         OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
         OLED_ShowString(0, 8, (uint8_t*)"Deletion", 8, 1);
