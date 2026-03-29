@@ -32,7 +32,6 @@
 #include "stm32f1xx_hal_flash.h"
 #include "stm32f1xx_hal_flash_ex.h"
 #include "string.h"
-#include "AS608.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,6 +46,10 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -528,8 +531,85 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-		  // 初始化后PWM输出SG90舵机的中间位置信号（90度）
-		#if 1
+	  // 初始化后PWM输出SG90舵机的中间位置信号（90度）
+	#if 1
+    // 串口2蓝牙通信处理
+    static uint8_t bluetooth_buffer[5] = {0};
+    static uint8_t bluetooth_index = 0;
+    uint8_t rx_data;
+    
+    if (HAL_UART_Receive(&huart2, &rx_data, 1, 10) == HAL_OK)
+    {
+      if (rx_data == '\n' || rx_data == '\r')
+      {
+        // 接收到完整的密码
+        if (bluetooth_index == 4)
+        {
+          // 验证密码
+          uint8_t pin_match = 1;
+          for (uint8_t i = 0; i < 4; i++)
+          {
+            if (bluetooth_buffer[i] - '0' != saved_pin[i])
+            {
+              pin_match = 0;
+              break;
+            }
+          }
+          
+          if (pin_match)
+          {
+            // 密码正确，操作SG90
+            OLED_Clear();
+            OLED_ShowString(0, 0, (uint8_t*)"Bluetooth", 8, 1);
+            OLED_ShowString(0, 8, (uint8_t*)"Verified", 8, 1);
+            OLED_ShowString(0, 16, (uint8_t*)"Door Unlocked", 8, 1);
+            OLED_Refresh();
+            
+            // 控制SG90舵机，完整转动一次
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+            HAL_Delay(1000); // 等待舵机到位
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应90度
+            HAL_Delay(1000); // 等待舵机到位
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+            HAL_Delay(1000); // 等待舵机到位
+            
+            HAL_Delay(1000);
+            
+            // 返回主页面
+            OLED_Clear();
+            OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+            OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+            OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+            OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+            OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+            OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+            OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+            OLED_ShowString(0, 56, (uint8_t*)"Press #8 to Change PIN", 8, 1);
+            OLED_Refresh();
+          }
+          else
+          {
+            // 密码错误，发送错误信息
+            char error_msg[] = "Password Error\r\n";
+            HAL_UART_Transmit(&huart2, (uint8_t*)error_msg, strlen(error_msg), 1000);
+            
+            // 触发蜂鸣器
+            HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
+            HAL_Delay(3000);
+            HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_SET);
+          }
+        }
+        // 重置缓冲区
+        bluetooth_index = 0;
+        memset(bluetooth_buffer, 0, 5);
+      }
+      else if (bluetooth_index < 4 && rx_data >= '0' && rx_data <= '9')
+      {
+        // 接收数字字符
+        bluetooth_buffer[bluetooth_index++] = rx_data;
+      }
+    }
+    
     static uint8_t last_key = 0;
     uint8_t current_key = Matrix_Keyboard_Scan();
     
@@ -1111,6 +1191,12 @@ int main(void)
           OLED_ShowString(0, 8, (uint8_t*)"Failed!", 8, 1);
           OLED_ShowString(0, 16, (uint8_t*)"Finger not found", 8, 1);
           OLED_Refresh();
+          
+          // 触发蜂鸣器
+          HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
+          HAL_Delay(3000);
+          HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_SET);
+          
           HAL_Delay(2000);
         }
         
@@ -1180,13 +1266,15 @@ int main(void)
                   OLED_ShowString(0, 8, (uint8_t*)"Door Unlocked", 8, 1);
                   OLED_Refresh();
                   
-                  // 控制SG90舵机，从0度转动到90度
+                  // 控制SG90舵机，完整转动一次
                   __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
                   HAL_Delay(1000); // 等待舵机到位
                   __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应90度
                   HAL_Delay(1000); // 等待舵机到位
+                  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+                  HAL_Delay(1000); // 等待舵机到位
                   
-                  HAL_Delay(2000);
+                  HAL_Delay(1000);
                 }
                 else
                 {
@@ -1195,6 +1283,12 @@ int main(void)
                   OLED_ShowString(0, 0, (uint8_t*)"PIN Error", 8, 1);
                   OLED_ShowString(0, 8, (uint8_t*)"Access Denied", 8, 1);
                   OLED_Refresh();
+                  
+                  // 触发蜂鸣器
+                  HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
+                  HAL_Delay(3000);
+                  HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_SET);
+                  
                   HAL_Delay(2000);
                 }
               }
@@ -1304,19 +1398,27 @@ int main(void)
             OLED_ShowString(0, 16, (uint8_t*)"Access Granted", 8, 1);
             OLED_Refresh();
             
-            // 控制SG90舵机，从0度转动到90度
+            // 控制SG90舵机，完整转动一次
             __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
             HAL_Delay(1000); // 等待舵机到位
             __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应90度
             HAL_Delay(1000); // 等待舵机到位
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+            HAL_Delay(1000); // 等待舵机到位
             
-            HAL_Delay(2000);
+            HAL_Delay(1000);
           }
           else
           {
             // 卡片未注册
             OLED_ShowString(0, 16, (uint8_t*)"Access Denied", 8, 1);
             OLED_Refresh();
+            
+            // 触发蜂鸣器
+            HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
+            HAL_Delay(3000);
+            HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_SET);
+            
             HAL_Delay(2000);
           }
           
@@ -1388,6 +1490,12 @@ int main(void)
         OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
         OLED_ShowString(0, 8, (uint8_t*)"Not Found", 8, 1);
         OLED_Refresh();
+        
+        // 触发蜂鸣器
+        HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
+        HAL_Delay(3000);
+        HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_SET);
+        
         HAL_Delay(1000);
         
         // 返回主页面
@@ -1418,6 +1526,12 @@ int main(void)
         OLED_ShowString(0, 8, (uint8_t*)"Error", 8, 1);
         OLED_ShowString(0, 16, (uint8_t*)AS608_GetErrorString(finger_result), 8, 1);
         OLED_Refresh();
+        
+        // 触发蜂鸣器
+        HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_RESET);
+        HAL_Delay(3000);
+        HAL_GPIO_WritePin(BEEP_GPIO_Port, BEEP_Pin, GPIO_PIN_SET);
+        
         HAL_Delay(1000);
         
         // 返回主页面
