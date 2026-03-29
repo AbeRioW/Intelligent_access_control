@@ -56,6 +56,7 @@
 
 /* External variables --------------------------------------------------------*/
 extern SPI_HandleTypeDef hspi1;
+extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 /* USER CODE BEGIN EV */
 
@@ -214,6 +215,20 @@ void SPI1_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles USART2 global interrupt.
+  */
+void USART2_IRQHandler(void)
+{
+  /* USER CODE BEGIN USART2_IRQn 0 */
+
+  /* USER CODE END USART2_IRQn 0 */
+  HAL_UART_IRQHandler(&huart2);
+  /* USER CODE BEGIN USART2_IRQn 1 */
+
+  /* USER CODE END USART2_IRQn 1 */
+}
+
+/**
   * @brief This function handles USART3 global interrupt.
   */
 void USART3_IRQHandler(void)
@@ -232,9 +247,9 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart == &huart3)
     {
-        if ((USART3_RX_STA & 0x8000) == 0) // ????¦Ä???
+        if ((USART3_RX_STA & 0x8000) == 0) // ????ï¿½ï¿½???
         {
-            if (USART3_RX_STA < USART3_MAX_RECV_LEN) // ??????¦Ä??
+            if (USART3_RX_STA < USART3_MAX_RECV_LEN) // ??????ï¿½ï¿½??
             {
                 USART3_RX_STA++; // ???????+1
                 // ????????????????

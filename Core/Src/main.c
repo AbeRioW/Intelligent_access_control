@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -27,6 +28,9 @@
 #include "oled.h"
 #include "matrix_keyboard.h"
 #include "RC522.h"
+#include "AS608.h"
+#include "stm32f1xx_hal_flash.h"
+#include "stm32f1xx_hal_flash_ex.h"
 #include "string.h"
 #include "AS608.h"
 /* USER CODE END Includes */
@@ -44,11 +48,17 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
-/* USER CODE END PM */
-
+/* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
-/* USER CODE BEGIN PV */
+// NFC卡片ID存储相关定义
+#define MAX_NFC_IDS 10 // 最多存储10个NFC卡片ID
+#define NFC_ID_SIZE 5 // NFC卡片ID大小（字节）
+#define FLASH_PAGE_SIZE 0x400 // STM32F103C8T6的FLASH页面大小（1KB）
+#define FLASH_START_ADDR 0x0801F000 // FLASH存储起始地址（选择最后一个页面）
+
+uint8_t nfc_id_list[MAX_NFC_IDS][NFC_ID_SIZE]; // NFC卡片ID列表
+uint8_t nfc_id_count = 0; // 已存储的NFC卡片ID数量
 
 /* USER CODE END PV */
 
@@ -60,6 +70,158 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+  * @brief  从FLASH读取NFC卡片ID列表
+  * @param  无
+  * @retval 无
+  */
+void ReadNFCIDsFromFlash(void)
+{
+  // 从FLASH读取NFC卡片ID数量
+  nfc_id_count = *((uint16_t *)FLASH_START_ADDR);
+  
+  // 检查数量是否合法
+  if (nfc_id_count > MAX_NFC_IDS)
+  {
+    nfc_id_count = 0;
+    return;
+  }
+  
+  // 从FLASH读取NFC卡片ID列表
+  for (uint8_t i = 0; i < nfc_id_count; i++)
+  {
+    for (uint8_t j = 0; j < NFC_ID_SIZE; j++)
+    {
+      nfc_id_list[i][j] = *((uint16_t *)(FLASH_START_ADDR + 2 + i * NFC_ID_SIZE * 2 + j * 2));
+    }
+  }
+}
+
+/**
+  * @brief  向FLASH写入NFC卡片ID列表
+  * @param  无
+  * @retval 无
+  */
+void WriteNFCIDsToFlash(void)
+{
+  FLASH_EraseInitTypeDef EraseInitStruct;
+  uint32_t PageError = 0;
+  
+  // 解锁FLASH
+  HAL_FLASH_Unlock();
+  
+  // 配置擦除参数
+  EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+  EraseInitStruct.PageAddress = FLASH_START_ADDR;
+  EraseInitStruct.NbPages = 1;
+  
+  // 擦除FLASH页面
+  if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK)
+  {
+    // 擦除失败
+    HAL_FLASH_Lock();
+    return;
+  }
+  
+  // 写入NFC卡片ID数量
+  if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, FLASH_START_ADDR, nfc_id_count) != HAL_OK)
+  {
+    // 写入失败
+    HAL_FLASH_Lock();
+    return;
+  }
+  
+  // 写入NFC卡片ID列表
+  for (uint8_t i = 0; i < nfc_id_count; i++)
+  {
+    for (uint8_t j = 0; j < NFC_ID_SIZE; j++)
+    {
+      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, FLASH_START_ADDR + 2 + i * NFC_ID_SIZE * 2 + j * 2, nfc_id_list[i][j]) != HAL_OK)
+      {
+        // 写入失败
+        HAL_FLASH_Lock();
+        return;
+      }
+    }
+  }
+  
+  // 锁定FLASH
+  HAL_FLASH_Lock();
+}
+
+/**
+  * @brief  检查NFC卡片ID是否已存在
+  * @param  id: 要检查的NFC卡片ID
+  * @retval 1: 已存在，0: 不存在
+  */
+uint8_t CheckNFCIDExists(uint8_t *id)
+{
+  for (uint8_t i = 0; i < nfc_id_count; i++)
+  {
+    if (memcmp(nfc_id_list[i], id, NFC_ID_SIZE) == 0)
+    {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/**
+  * @brief  添加新的NFC卡片ID到列表
+  * @param  id: 要添加的NFC卡片ID
+  * @retval 1: 添加成功，0: 添加失败（已满）
+  */
+uint8_t AddNFCID(uint8_t *id)
+{
+  if (nfc_id_count >= MAX_NFC_IDS)
+  {
+    return 0; // 已满
+  }
+  
+  // 复制ID到列表
+  memcpy(nfc_id_list[nfc_id_count], id, NFC_ID_SIZE);
+  nfc_id_count++;
+  
+  // 写入FLASH
+  WriteNFCIDsToFlash();
+  
+  return 1;
+}
+
+/**
+  * @brief  从列表中删除NFC卡片ID
+  * @param  id: 要删除的NFC卡片ID
+  * @retval 1: 删除成功，0: 删除失败（未找到）
+  */
+uint8_t RemoveNFCID(uint8_t *id)
+{
+  uint8_t found = 0;
+  
+  // 查找ID在列表中的位置
+  for (uint8_t i = 0; i < nfc_id_count; i++)
+  {
+    if (memcmp(nfc_id_list[i], id, NFC_ID_SIZE) == 0)
+    {
+      // 找到ID，将后面的ID前移
+      for (uint8_t j = i; j < nfc_id_count - 1; j++)
+      {
+        memcpy(nfc_id_list[j], nfc_id_list[j + 1], NFC_ID_SIZE);
+      }
+      nfc_id_count--;
+      found = 1;
+      break;
+    }
+  }
+  
+  if (found)
+  {
+    // 写入FLASH
+    WriteNFCIDsToFlash();
+  }
+  
+  return found;
+}
 
 /* USER CODE END 0 */
 
@@ -94,6 +256,8 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_USART3_UART_Init();
+  MX_USART2_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
    OLED_Init();
   OLED_ShowString(0,0,(uint8_t*)"Initializing...",8,1);
@@ -101,8 +265,15 @@ int main(void)
   HAL_Delay(1000);
    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_13, GPIO_PIN_RESET); // LAY1连接到PB13
 	 HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET); // LAY1连接到PB13
+  
+  // 初始化后PWM输出SG90舵机的中间位置信号（90度）
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应1.5ms脉冲宽度
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2); // 启动PWM输出
+  
   PCD_Init(); // 初始化RC522
   AS608_Init(); // 初始化AS608
+  
+  ReadNFCIDsFromFlash(); // 从FLASH读取NFC卡片ID列表
   
   // AS608握手
   OLED_Clear();
@@ -125,6 +296,9 @@ int main(void)
     OLED_Clear();
     OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
     OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+    OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+    OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+    OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
     OLED_Refresh();
   }
   else
@@ -135,14 +309,9 @@ int main(void)
     OLED_ShowString(0, 8, (uint8_t*)"Failed!", 8, 1);
     OLED_Refresh();
     HAL_Delay(2000);
-		while(1);
+	while(1);
   }
-	OLED_Clear();
   Matrix_Keyboard_Init();
-  PCD_Init();
-	  AS608_Init(); // 初始化AS608
-  OLED_ShowString(0,0,(uint8_t*)"NFC Card ID:",8,1);
-  OLED_Refresh();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -152,16 +321,301 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+		  // 初始化后PWM输出SG90舵机的中间位置信号（90度）
+		#if 1
     static uint8_t last_key = 0;
     uint8_t current_key = Matrix_Keyboard_Scan();
     
     // 键盘处理
     if (current_key != last_key && current_key != 0)
     {
-      OLED_Clear();
-      OLED_ShowString(0,0,(uint8_t*)"Key: ",8,1);
-      OLED_ShowNum(40,0,current_key,2,8,1);
-      OLED_Refresh();
+      if (current_key == 4)
+      {
+        // 4号按键，进入NFC卡片注册模式
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Place NFC Card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"to Register", 8, 1);
+        OLED_Refresh();
+        
+        // 等待按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // 等待NFC卡片
+        uint8_t card_type[2] = {0};
+        uint8_t card_id[5] = {0};
+        uint8_t found = 0;
+        
+        while (!found)
+        {
+          if (PCD_Request(PICC_REQIDL, card_type) == PCD_OK)
+          {
+            if (PCD_Anticoll(card_id) == PCD_OK)
+            {
+              // 读取到卡片ID
+              OLED_Clear();
+              OLED_ShowString(0, 0, (uint8_t*)"NFC ID:", 8, 1);
+              for (uint8_t i = 0; i < 4; i++)
+              {
+                OLED_ShowNum(i * 24, 16, card_id[i], 2, 8, 1);
+              }
+              OLED_Refresh();
+              
+              // 检查ID是否已存在
+              if (CheckNFCIDExists(card_id))
+              {
+                // 已注册
+                OLED_ShowString(0, 24, (uint8_t*)"Already Registered", 8, 1);
+                OLED_Refresh();
+                HAL_Delay(2000);
+              }
+              else
+              {
+                // 添加新ID
+                if (AddNFCID(card_id))
+                {
+                  // 添加成功
+                  OLED_ShowString(0, 24, (uint8_t*)"Registered Successfully", 8, 1);
+                  OLED_Refresh();
+                  HAL_Delay(2000);
+                }
+                else
+                {
+                  // 存储已满
+                  OLED_ShowString(0, 24, (uint8_t*)"Storage Full", 8, 1);
+                  OLED_Refresh();
+                  HAL_Delay(2000);
+                }
+              }
+              found = 1;
+            }
+          }
+          HAL_Delay(100);
+        }
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_Refresh();
+      }
+      else if (current_key == 12)
+      {
+        // 12号按键，进入NFC卡片删除模式
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Place NFC Card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"to Delete", 8, 1);
+        OLED_Refresh();
+        
+        // 等待按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // 等待NFC卡片
+        uint8_t card_type[2] = {0};
+        uint8_t card_id[5] = {0};
+        uint8_t found = 0;
+        
+        while (!found)
+        {
+          if (PCD_Request(PICC_REQIDL, card_type) == PCD_OK)
+          {
+            if (PCD_Anticoll(card_id) == PCD_OK)
+            {
+              // 读取到卡片ID
+              OLED_Clear();
+              OLED_ShowString(0, 0, (uint8_t*)"NFC ID:", 8, 1);
+              for (uint8_t i = 0; i < 4; i++)
+              {
+                OLED_ShowNum(i * 24, 16, card_id[i], 2, 8, 1);
+              }
+              OLED_Refresh();
+              
+              // 检查ID是否存在
+              if (CheckNFCIDExists(card_id))
+              {
+                // 删除ID
+                if (RemoveNFCID(card_id))
+                {
+                  // 删除成功
+                  OLED_ShowString(0, 24, (uint8_t*)"Deleted Successfully", 8, 1);
+                  OLED_Refresh();
+                  HAL_Delay(2000);
+                }
+              }
+              else
+              {
+                // 卡片未注册
+                OLED_ShowString(0, 24, (uint8_t*)"Invalid Card", 8, 1);
+                OLED_Refresh();
+                HAL_Delay(2000);
+              }
+              found = 1;
+            }
+          }
+          HAL_Delay(100);
+        }
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_Refresh();
+      }
+      else if (current_key == 16)
+      {
+        // 16号按键，进入PIN码开门模式
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Enter PIN code:", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 to confirm", 8, 1);
+        OLED_Refresh();
+        
+        // 等待按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // PIN码输入逻辑
+        uint8_t pin_code[4] = {0};
+        uint8_t pin_index = 0;
+        uint8_t exit_flag = 0;
+        
+        while (!exit_flag)
+        {
+          uint8_t pin_key = Matrix_Keyboard_Scan();
+          if (pin_key != 0)
+          {
+            if (pin_key == 16)
+            {
+              // 16号按键确认
+              if (pin_index == 4)
+              {
+                // 验证PIN码，默认PIN码为0000
+                uint8_t default_pin[4] = {0, 0, 0, 0};
+                uint8_t pin_match = 1;
+                
+                for (uint8_t i = 0; i < 4; i++)
+                {
+                  if (pin_code[i] != default_pin[i])
+                  {
+                    pin_match = 0;
+                    break;
+                  }
+                }
+                
+                OLED_Clear();
+                OLED_ShowString(0, 0, (uint8_t*)"Verifying PIN...", 8, 1);
+                OLED_Refresh();
+                HAL_Delay(1000);
+                
+                if (pin_match)
+                {
+                  // PIN码正确
+                  OLED_Clear();
+                  OLED_ShowString(0, 0, (uint8_t*)"PIN Verified", 8, 1);
+                  OLED_ShowString(0, 8, (uint8_t*)"Door Unlocked", 8, 1);
+                  OLED_Refresh();
+                  
+                  // 控制SG90舵机，从0度转动到90度
+                  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+                  HAL_Delay(1000); // 等待舵机到位
+                  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应90度
+                  HAL_Delay(1000); // 等待舵机到位
+                  
+                  HAL_Delay(2000);
+                }
+                else
+                {
+                  // PIN码错误
+                  OLED_Clear();
+                  OLED_ShowString(0, 0, (uint8_t*)"PIN Error", 8, 1);
+                  OLED_ShowString(0, 8, (uint8_t*)"Access Denied", 8, 1);
+                  OLED_Refresh();
+                  HAL_Delay(2000);
+                }
+              }
+              exit_flag = 1;
+            }
+            else if (pin_index < 4)
+            {
+              // 按键映射：1-3->1-3, 5-7->4-6, 9-11->7-9, 14->0
+              uint8_t digit = 0;
+              if (pin_key >= 1 && pin_key <= 3)
+              {
+                digit = pin_key; // 1->1, 2->2, 3->3
+              }
+              else if (pin_key >= 5 && pin_key <= 7)
+              {
+                digit = pin_key - 1; // 5->4, 6->5, 7->6
+              }
+              else if (pin_key >= 9 && pin_key <= 11)
+              {
+                digit = pin_key - 2; // 9->7, 10->8, 11->9
+              }
+              else if (pin_key == 14)
+              {
+                digit = 0; // 14->0
+              }
+              
+              if (digit != 0 || pin_key == 14)
+              {
+                pin_code[pin_index] = digit;
+                pin_index++;
+                
+                // 显示输入的PIN码（显示明文）
+                OLED_Clear();
+                OLED_ShowString(0, 0, (uint8_t*)"Enter PIN code:", 8, 1);
+                for (uint8_t i = 0; i < pin_index; i++)
+                {
+                  OLED_ShowNum(10 + i*16, 8, pin_code[i], 1, 8, 1);
+                }
+                OLED_ShowString(0, 16, (uint8_t*)"Press #16 to confirm", 8, 1);
+                OLED_Refresh();
+                
+                // 等待按键释放
+                while (Matrix_Keyboard_Scan() != 0)
+                {
+                  HAL_Delay(10);
+                }
+              }
+            }
+          }
+          HAL_Delay(50); // 扫描间隔
+        }
+        
+        // 等待16号按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_Refresh();
+      }
+      else
+      {
+        // 其他按键
+        OLED_Clear();
+        OLED_ShowString(0,0,(uint8_t*)"Key: ",8,1);
+        OLED_ShowNum(40,0,current_key,2,8,1);
+        OLED_Refresh();
+      }
       last_key = current_key;
     }
     else if (current_key == 0)
@@ -172,7 +626,7 @@ int main(void)
     // NFC卡片检测
     static uint8_t last_card[4] = {0};
     uint8_t card_type[2] = {0};
-    uint8_t card_id[4] = {0};
+    uint8_t card_id[5] = {0};
     
     if (PCD_Request(PICC_REQIDL, card_type) == PCD_OK)
     {
@@ -185,10 +639,41 @@ int main(void)
           OLED_ShowString(0,0,(uint8_t*)"NFC Card ID:",8,1);
           for (int i = 0; i < 4; i++)
           {
-            OLED_ShowNum(10 + i*20, 2, card_id[i], 2, 8, 1);
+            OLED_ShowNum(10 + i*20, 8, card_id[i], 2, 8, 1);
           }
           OLED_Refresh();
           memcpy(last_card, card_id, 4);
+          
+          // 检查卡片ID是否已注册
+          if (CheckNFCIDExists(card_id))
+          {
+            // 卡片已注册，验证成功
+            OLED_ShowString(0, 16, (uint8_t*)"Access Granted", 8, 1);
+            OLED_Refresh();
+            
+            // 控制SG90舵机，从0度转动到90度
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+            HAL_Delay(1000); // 等待舵机到位
+            __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应90度
+            HAL_Delay(1000); // 等待舵机到位
+            
+            HAL_Delay(2000);
+          }
+          else
+          {
+            // 卡片未注册
+            OLED_ShowString(0, 16, (uint8_t*)"Access Denied", 8, 1);
+            OLED_Refresh();
+            HAL_Delay(2000);
+          }
+          
+          // 返回主页面
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+          OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+          OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+          OLED_Refresh();
         }
       }
     }
@@ -198,7 +683,37 @@ int main(void)
       memset(last_card, 0, 4);
     }
     
+    // 指纹检测
+    static uint8_t last_finger = 0;
+    uint8_t finger_result = AS608_GetImage();
+    if (finger_result == AS608_ACK_OK)
+    {
+      // 检测到指纹
+      if (!last_finger)
+      {
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Finger detected", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Verifying...", 8, 1);
+        OLED_Refresh();
+        // 这里可以添加指纹验证逻辑
+        HAL_Delay(2000);
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_Refresh();
+        last_finger = 1;
+      }
+    }
+    else
+    {
+      last_finger = 0;
+    }
+    
     HAL_Delay(100); // 消抖
+		#endif
   }
   /* USER CODE END 3 */
 }

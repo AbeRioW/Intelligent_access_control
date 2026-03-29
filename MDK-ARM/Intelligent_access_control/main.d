@@ -26,13 +26,16 @@ intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx
 intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_flash_ex.h
 intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_pwr.h
 intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_spi.h
+intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim.h
+intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_tim_ex.h
 intelligent_access_control\main.o: ../Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_uart.h
 intelligent_access_control\main.o: ../Core/Inc/spi.h
+intelligent_access_control\main.o: ../Core/Inc/tim.h
 intelligent_access_control\main.o: ../Core/Inc/usart.h
 intelligent_access_control\main.o: ../Core/Inc/gpio.h
 intelligent_access_control\main.o: ../App/oled.h
 intelligent_access_control\main.o: ../App/matrix_keyboard.h
 intelligent_access_control\main.o: ../App/RC522.h
-intelligent_access_control\main.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
 intelligent_access_control\main.o: ../App/AS608.h
+intelligent_access_control\main.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h
 intelligent_access_control\main.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h
