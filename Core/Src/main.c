@@ -59,6 +59,7 @@
 
 uint8_t nfc_id_list[MAX_NFC_IDS][NFC_ID_SIZE]; // NFC卡片ID列表
 uint8_t nfc_id_count = 0; // 已存储的NFC卡片ID数量
+uint8_t saved_pin[4] = {0, 0, 0, 0}; // 存储的密码
 
 /* USER CODE END PV */
 
@@ -223,6 +224,209 @@ uint8_t RemoveNFCID(uint8_t *id)
   return found;
 }
 
+/**
+  * @brief  从FLASH读取密码
+  * @param  pin: 存储密码的数组
+  * @retval 无
+  */
+void ReadPINFromFlash(uint8_t *pin)
+{
+  // 从FLASH读取密码
+  for (uint8_t i = 0; i < 4; i++)
+  {
+    pin[i] = *((uint16_t *)(FLASH_START_ADDR + 2 + MAX_NFC_IDS * NFC_ID_SIZE * 2 + i * 2));
+  }
+  
+  // 检查密码是否有效（如果FLASH中没有存储密码，使用默认密码0000）
+  if (pin[0] > 9 || pin[1] > 9 || pin[2] > 9 || pin[3] > 9)
+  {
+    pin[0] = 0;
+    pin[1] = 0;
+    pin[2] = 0;
+    pin[3] = 0;
+  }
+}
+
+/**
+  * @brief  向FLASH写入密码
+  * @param  pin: 要写入的密码数组
+  * @retval 无
+  */
+void WritePINToFlash(uint8_t *pin)
+{
+  FLASH_EraseInitTypeDef EraseInitStruct;
+  uint32_t PageError = 0;
+  
+  // 解锁FLASH
+  HAL_FLASH_Unlock();
+  
+  // 配置擦除参数
+  EraseInitStruct.TypeErase = FLASH_TYPEERASE_PAGES;
+  EraseInitStruct.PageAddress = FLASH_START_ADDR;
+  EraseInitStruct.NbPages = 1;
+  
+  // 擦除FLASH页面
+  if (HAL_FLASHEx_Erase(&EraseInitStruct, &PageError) != HAL_OK)
+  {
+    // 擦除失败
+    HAL_FLASH_Lock();
+    return;
+  }
+  
+  // 写入NFC卡片ID数量
+  if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, FLASH_START_ADDR, nfc_id_count) != HAL_OK)
+  {
+    // 写入失败
+    HAL_FLASH_Lock();
+    return;
+  }
+  
+  // 写入NFC卡片ID列表
+  for (uint8_t i = 0; i < nfc_id_count; i++)
+  {
+    for (uint8_t j = 0; j < NFC_ID_SIZE; j++)
+    {
+      if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, FLASH_START_ADDR + 2 + i * NFC_ID_SIZE * 2 + j * 2, nfc_id_list[i][j]) != HAL_OK)
+      {
+        // 写入失败
+        HAL_FLASH_Lock();
+        return;
+      }
+    }
+  }
+  
+  // 写入密码
+  for (uint8_t i = 0; i < 4; i++)
+  {
+    if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, FLASH_START_ADDR + 2 + MAX_NFC_IDS * NFC_ID_SIZE * 2 + i * 2, pin[i]) != HAL_OK)
+    {
+      // 写入失败
+      HAL_FLASH_Lock();
+      return;
+    }
+  }
+  
+  // 锁定FLASH
+  HAL_FLASH_Lock();
+}
+
+/**
+  * @brief  密码验证函数
+  * @param  无
+  * @retval 1: 验证成功，0: 验证失败
+  */
+uint8_t VerifyPIN(void)
+{
+  OLED_Clear();
+  OLED_ShowString(0, 0, (uint8_t*)"Enter PIN code:", 8, 1);
+  OLED_ShowString(0, 16, (uint8_t*)"Press #16 to confirm", 8, 1);
+  OLED_Refresh();
+  
+  // 等待按键释放
+  while (Matrix_Keyboard_Scan() != 0)
+  {
+    HAL_Delay(10);
+  }
+  
+  // PIN码输入逻辑
+  uint8_t pin_code[4] = {0};
+  uint8_t pin_index = 0;
+  uint8_t exit_flag = 0;
+  
+  while (!exit_flag)
+  {
+    uint8_t pin_key = Matrix_Keyboard_Scan();
+    if (pin_key != 0)
+    {
+      if (pin_key == 16)
+      {
+        // 16号按键确认
+        if (pin_index == 4)
+        {
+          exit_flag = 1;
+        }
+      }
+      else if (pin_index < 4)
+      {
+        // 按键映射：1-3->1-3, 5-7->4-6, 9-11->7-9, 14->0
+        uint8_t digit = 0;
+        if (pin_key >= 1 && pin_key <= 3)
+        {
+          digit = pin_key; // 1->1, 2->2, 3->3
+        }
+        else if (pin_key >= 5 && pin_key <= 7)
+        {
+          digit = pin_key - 1; // 5->4, 6->5, 7->6
+        }
+        else if (pin_key >= 9 && pin_key <= 11)
+        {
+          digit = pin_key - 2; // 9->7, 10->8, 11->9
+        }
+        else if (pin_key == 14)
+        {
+          digit = 0; // 14->0
+        }
+        
+        if (digit >= 0 && digit <= 9)
+        {
+          pin_code[pin_index] = digit;
+          OLED_ShowNum(pin_index * 20, 8, digit, 1, 8, 1);
+          OLED_Refresh();
+          pin_index++;
+        }
+      }
+      // 等待按键释放
+      while (Matrix_Keyboard_Scan() != 0)
+      {
+        HAL_Delay(10);
+      }
+    }
+    HAL_Delay(100);
+  }
+  
+  // 验证PIN码
+  uint8_t pin_match = 1;
+  
+  for (uint8_t i = 0; i < 4; i++)
+  {
+    if (pin_code[i] != saved_pin[i])
+    {
+      pin_match = 0;
+      break;
+    }
+  }
+  
+  OLED_Clear();
+  OLED_ShowString(0, 0, (uint8_t*)"Verifying PIN...", 8, 1);
+  OLED_Refresh();
+  HAL_Delay(1000);
+  
+  if (!pin_match)
+  {
+    // PIN码错误
+    OLED_Clear();
+    OLED_ShowString(0, 0, (uint8_t*)"PIN Error", 8, 1);
+    OLED_ShowString(0, 8, (uint8_t*)"Access Denied", 8, 1);
+    OLED_Refresh();
+    HAL_Delay(2000);
+    
+    // 返回主页面
+    OLED_Clear();
+    OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+    OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+    OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+    OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+    OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+    OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+    OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+    OLED_ShowString(0, 56, (uint8_t*)"Press #8 to Change PIN", 8, 1);
+    OLED_Refresh();
+    return 0;
+  }
+  
+  return 1;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -274,6 +478,7 @@ int main(void)
   AS608_Init(); // 初始化AS608
   
   ReadNFCIDsFromFlash(); // 从FLASH读取NFC卡片ID列表
+  ReadPINFromFlash(saved_pin); // 从FLASH读取密码
   
   // AS608握手
   OLED_Clear();
@@ -299,6 +504,8 @@ int main(void)
     OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
     OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
     OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+    OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+    OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
     OLED_Refresh();
   }
   else
@@ -470,6 +677,432 @@ int main(void)
         OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
         OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
         OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+        OLED_Refresh();
+      }
+      else if (current_key == 13)
+      {
+        // 13号按键，进入指纹注册模式
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Enrollment", 8, 1);
+        OLED_Refresh();
+        
+        // 等待按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // 生成一个简单的指纹ID（从1开始）
+        static uint16_t fp_id = 1;
+        
+        // 显示提示信息，给用户足够的准备时间
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Enrollment", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Place finger", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"on sensor", 8, 1);
+        OLED_Refresh();
+        
+        // 给用户3秒的准备时间
+        HAL_Delay(3000);
+        
+        // 调用AS608_Enroll函数进行指纹注册
+        uint8_t result = AS608_Enroll(fp_id);
+        
+        if (result == AS608_ACK_OK)
+        {
+          // 注册成功
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"Enrollment", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Success!", 8, 1);
+          char fp_id_str[10];
+          sprintf(fp_id_str, "ID: %d", fp_id);
+          OLED_ShowString(0, 16, (uint8_t*)fp_id_str, 8, 1);
+          OLED_Refresh();
+          HAL_Delay(2000);
+          fp_id++;
+          if (fp_id >= AS608_MAX_FINGER_NUM)
+          {
+            fp_id = 1; // 重置ID
+          }
+        }
+        else
+        {
+          // 注册失败
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"Enrollment", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Failed!", 8, 1);
+          OLED_ShowString(0, 16, (uint8_t*)AS608_GetErrorString(result), 8, 1);
+          OLED_Refresh();
+          HAL_Delay(2000);
+        }
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+        OLED_Refresh();
+      }
+      else if (current_key == 8)
+      {
+        // 8号按键，进入密码修改模式
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Change PIN", 8, 1);
+        OLED_Refresh();
+        
+        // 等待按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // 1. 输入当前密码
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Enter current PIN:", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 to confirm", 8, 1);
+        OLED_Refresh();
+        
+        uint8_t current_pin[4] = {0};
+        uint8_t pin_index = 0;
+        uint8_t exit_flag = 0;
+        
+        while (!exit_flag)
+        {
+          uint8_t pin_key = Matrix_Keyboard_Scan();
+          if (pin_key != 0)
+          {
+            if (pin_key == 16)
+            {
+              // 16号按键确认
+              if (pin_index == 4)
+              {
+                exit_flag = 1;
+              }
+            }
+            else if (pin_index < 4)
+            {
+              // 按键映射：1-3->1-3, 5-7->4-6, 9-11->7-9, 14->0
+              uint8_t digit = 0;
+              if (pin_key >= 1 && pin_key <= 3)
+              {
+                digit = pin_key; // 1->1, 2->2, 3->3
+              }
+              else if (pin_key >= 5 && pin_key <= 7)
+              {
+                digit = pin_key - 1; // 5->4, 6->5, 7->6
+              }
+              else if (pin_key >= 9 && pin_key <= 11)
+              {
+                digit = pin_key - 2; // 9->7, 10->8, 11->9
+              }
+              else if (pin_key == 14)
+              {
+                digit = 0; // 14->0
+              }
+              
+              if (digit >= 0 && digit <= 9)
+              {
+                current_pin[pin_index] = digit;
+                OLED_ShowNum(pin_index * 20, 8, digit, 1, 8, 1);
+                OLED_Refresh();
+                pin_index++;
+              }
+            }
+            // 等待按键释放
+            while (Matrix_Keyboard_Scan() != 0)
+            {
+              HAL_Delay(10);
+            }
+          }
+          HAL_Delay(100);
+        }
+        
+        // 2. 验证当前密码
+        uint8_t pin_match = 1;
+        
+        for (uint8_t i = 0; i < 4; i++)
+        {
+          if (current_pin[i] != saved_pin[i])
+          {
+            pin_match = 0;
+            break;
+          }
+        }
+        
+        if (!pin_match)
+        {
+          // 密码错误
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"PIN Error", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Access Denied", 8, 1);
+          OLED_Refresh();
+          HAL_Delay(2000);
+          
+          // 返回主页面
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+          OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+          OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+          OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+          OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+          OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+          OLED_ShowString(0, 56, (uint8_t*)"Press #8 to Change PIN", 8, 1);
+          OLED_Refresh();
+          continue;
+        }
+        
+        // 3. 输入新密码
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Enter new PIN:", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 to confirm", 8, 1);
+        OLED_Refresh();
+        
+        uint8_t new_pin1[4] = {0};
+        pin_index = 0;
+        exit_flag = 0;
+        
+        while (!exit_flag)
+        {
+          uint8_t pin_key = Matrix_Keyboard_Scan();
+          if (pin_key != 0)
+          {
+            if (pin_key == 16)
+            {
+              // 16号按键确认
+              if (pin_index == 4)
+              {
+                exit_flag = 1;
+              }
+            }
+            else if (pin_index < 4)
+            {
+              // 按键映射：1-3->1-3, 5-7->4-6, 9-11->7-9, 14->0
+              uint8_t digit = 0;
+              if (pin_key >= 1 && pin_key <= 3)
+              {
+                digit = pin_key; // 1->1, 2->2, 3->3
+              }
+              else if (pin_key >= 5 && pin_key <= 7)
+              {
+                digit = pin_key - 1; // 5->4, 6->5, 7->6
+              }
+              else if (pin_key >= 9 && pin_key <= 11)
+              {
+                digit = pin_key - 2; // 9->7, 10->8, 11->9
+              }
+              else if (pin_key == 14)
+              {
+                digit = 0; // 14->0
+              }
+              
+              if (digit >= 0 && digit <= 9)
+              {
+                new_pin1[pin_index] = digit;
+                OLED_ShowNum(pin_index * 20, 8, digit, 1, 8, 1);
+                OLED_Refresh();
+                pin_index++;
+              }
+            }
+            // 等待按键释放
+            while (Matrix_Keyboard_Scan() != 0)
+            {
+              HAL_Delay(10);
+            }
+          }
+          HAL_Delay(100);
+        }
+        
+        // 4. 再次输入新密码确认
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Confirm new PIN:", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 to confirm", 8, 1);
+        OLED_Refresh();
+        
+        uint8_t new_pin2[4] = {0};
+        pin_index = 0;
+        exit_flag = 0;
+        
+        while (!exit_flag)
+        {
+          uint8_t pin_key = Matrix_Keyboard_Scan();
+          if (pin_key != 0)
+          {
+            if (pin_key == 16)
+            {
+              // 16号按键确认
+              if (pin_index == 4)
+              {
+                exit_flag = 1;
+              }
+            }
+            else if (pin_index < 4)
+            {
+              // 按键映射：1-3->1-3, 5-7->4-6, 9-11->7-9, 14->0
+              uint8_t digit = 0;
+              if (pin_key >= 1 && pin_key <= 3)
+              {
+                digit = pin_key; // 1->1, 2->2, 3->3
+              }
+              else if (pin_key >= 5 && pin_key <= 7)
+              {
+                digit = pin_key - 1; // 5->4, 6->5, 7->6
+              }
+              else if (pin_key >= 9 && pin_key <= 11)
+              {
+                digit = pin_key - 2; // 9->7, 10->8, 11->9
+              }
+              else if (pin_key == 14)
+              {
+                digit = 0; // 14->0
+              }
+              
+              if (digit >= 0 && digit <= 9)
+              {
+                new_pin2[pin_index] = digit;
+                OLED_ShowNum(pin_index * 20, 8, digit, 1, 8, 1);
+                OLED_Refresh();
+                pin_index++;
+              }
+            }
+            // 等待按键释放
+            while (Matrix_Keyboard_Scan() != 0)
+            {
+              HAL_Delay(10);
+            }
+          }
+          HAL_Delay(100);
+        }
+        
+        // 5. 检查两次输入是否一致
+        uint8_t pin_equal = 1;
+        for (uint8_t i = 0; i < 4; i++)
+        {
+          if (new_pin1[i] != new_pin2[i])
+          {
+            pin_equal = 0;
+            break;
+          }
+        }
+        
+        if (!pin_equal)
+        {
+          // 两次输入不一致
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"PIN Mismatch", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Try again", 8, 1);
+          OLED_Refresh();
+          HAL_Delay(2000);
+        }
+        else
+        {
+          // 两次输入一致，保存新密码到FLASH
+          memcpy(saved_pin, new_pin1, 4);
+          WritePINToFlash(saved_pin);
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"PIN Changed", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Success!", 8, 1);
+          OLED_Refresh();
+          HAL_Delay(2000);
+        }
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+        OLED_ShowString(0, 56, (uint8_t*)"Press #8 to Change PIN", 8, 1);
+        OLED_Refresh();
+      }
+      else if (current_key == 15)
+      {
+        // 15号按键，进入指纹删除模式
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Deletion", 8, 1);
+        OLED_Refresh();
+        
+        // 等待按键释放
+        while (Matrix_Keyboard_Scan() != 0)
+        {
+          HAL_Delay(10);
+        }
+        
+        // 显示提示信息
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Place finger", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"to delete", 8, 1);
+        OLED_Refresh();
+        
+        // 给用户3秒的准备时间
+        HAL_Delay(3000);
+        
+        // 验证指纹并获取其ID
+        uint16_t fp_id = 0;
+        uint16_t score = 0;
+        uint8_t verify_result = AS608_VerifyFinger(&fp_id, &score);
+        
+        if (verify_result == AS608_ACK_OK)
+        {
+          // 指纹验证成功，删除该指纹
+          uint8_t delete_result = AS608_DeleteChar(fp_id, 1);
+          
+          if (delete_result == AS608_ACK_OK)
+          {
+            // 删除成功
+            OLED_Clear();
+            OLED_ShowString(0, 0, (uint8_t*)"Deletion", 8, 1);
+            OLED_ShowString(0, 8, (uint8_t*)"Success!", 8, 1);
+            char fp_id_str[10];
+            sprintf(fp_id_str, "ID: %d", fp_id);
+            OLED_ShowString(0, 16, (uint8_t*)fp_id_str, 8, 1);
+            OLED_Refresh();
+            HAL_Delay(2000);
+          }
+          else
+          {
+            // 删除失败
+            OLED_Clear();
+            OLED_ShowString(0, 0, (uint8_t*)"Deletion", 8, 1);
+            OLED_ShowString(0, 8, (uint8_t*)"Failed!", 8, 1);
+            OLED_ShowString(0, 16, (uint8_t*)AS608_GetErrorString(delete_result), 8, 1);
+            OLED_Refresh();
+            HAL_Delay(2000);
+          }
+        }
+        else
+        {
+          // 指纹验证失败
+          OLED_Clear();
+          OLED_ShowString(0, 0, (uint8_t*)"Deletion", 8, 1);
+          OLED_ShowString(0, 8, (uint8_t*)"Failed!", 8, 1);
+          OLED_ShowString(0, 16, (uint8_t*)"Finger not found", 8, 1);
+          OLED_Refresh();
+          HAL_Delay(2000);
+        }
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+        OLED_ShowString(0, 56, (uint8_t*)"Press #8 to Change PIN", 8, 1);
         OLED_Refresh();
       }
       else if (current_key == 16)
@@ -501,13 +1134,12 @@ int main(void)
               // 16号按键确认
               if (pin_index == 4)
               {
-                // 验证PIN码，默认PIN码为0000
-                uint8_t default_pin[4] = {0, 0, 0, 0};
+                // 验证PIN码
                 uint8_t pin_match = 1;
                 
                 for (uint8_t i = 0; i < 4; i++)
                 {
-                  if (pin_code[i] != default_pin[i])
+                  if (pin_code[i] != saved_pin[i])
                   {
                     pin_match = 0;
                     break;
@@ -673,6 +1305,9 @@ int main(void)
           OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
           OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
           OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+          OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+          OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+          OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
           OLED_Refresh();
         }
       }
@@ -685,31 +1320,97 @@ int main(void)
     
     // 指纹检测
     static uint8_t last_finger = 0;
-    uint8_t finger_result = AS608_GetImage();
+    uint16_t fp_id = 0;
+    uint16_t score = 0;
+    uint8_t finger_result = AS608_VerifyFinger(&fp_id, &score);
+    
     if (finger_result == AS608_ACK_OK)
     {
-      // 检测到指纹
+      // 指纹验证成功
       if (!last_finger)
       {
         OLED_Clear();
-        OLED_ShowString(0, 0, (uint8_t*)"Finger detected", 8, 1);
-        OLED_ShowString(0, 8, (uint8_t*)"Verifying...", 8, 1);
+        OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Verified", 8, 1);
+        char fp_info[20];
+        sprintf(fp_info, "ID: %d, Score: %d", fp_id, score);
+        OLED_ShowString(0, 16, (uint8_t*)fp_info, 8, 1);
         OLED_Refresh();
-        // 这里可以添加指纹验证逻辑
+        
+        // 控制SG90舵机，从0度转动到90度
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 500); // 设置脉冲值为500，对应0度
+        HAL_Delay(1000); // 等待舵机到位
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 1500); // 设置脉冲值为1500，对应90度
+        HAL_Delay(1000); // 等待舵机到位
+        
         HAL_Delay(2000);
+        
         // 返回主页面
         OLED_Clear();
         OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
         OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
         OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
         OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
         OLED_Refresh();
         last_finger = 1;
       }
     }
+    else if (finger_result == AS608_ACK_NO_FOUND)
+    {
+      // 指纹未找到
+      if (!last_finger)
+      {
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Not Found", 8, 1);
+        OLED_Refresh();
+        HAL_Delay(1000);
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+        OLED_Refresh();
+        last_finger = 1;
+      }
+    }
+    else if (finger_result == AS608_ACK_NO_FINGER)
+    {
+      // 没有检测到手指
+      last_finger = 0;
+    }
     else
     {
-      last_finger = 0;
+      // 其他错误
+      if (!last_finger)
+      {
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Fingerprint", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Error", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)AS608_GetErrorString(finger_result), 8, 1);
+        OLED_Refresh();
+        HAL_Delay(1000);
+        
+        // 返回主页面
+        OLED_Clear();
+        OLED_ShowString(0, 0, (uint8_t*)"Wait for NFC card", 8, 1);
+        OLED_ShowString(0, 8, (uint8_t*)"Wait for fingerprint", 8, 1);
+        OLED_ShowString(0, 16, (uint8_t*)"Press #16 for PIN", 8, 1);
+        OLED_ShowString(0, 24, (uint8_t*)"Press #4 to Reg", 8, 1);
+        OLED_ShowString(0, 32, (uint8_t*)"Press #12 to Del", 8, 1);
+        OLED_ShowString(0, 40, (uint8_t*)"Press #13 for FP Reg", 8, 1);
+        OLED_ShowString(0, 48, (uint8_t*)"Press #15 to Del FP", 8, 1);
+        OLED_Refresh();
+        last_finger = 1;
+      }
     }
     
     HAL_Delay(100); // 消抖
